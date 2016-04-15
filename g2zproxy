@@ -4,6 +4,7 @@ import logging
 import sys
 import time
 import urllib2
+import base64
 import yaml
 
 from multiprocessing.pool import ThreadPool as Pool
@@ -41,6 +42,8 @@ class G2ZProxy(object):
                 zabbix_user='admin',
                 zabbix_pass='zabbix',
                 graphite_url='http://localhost',
+                graphite_user='',
+                graphite_pass='',
                 threads=1,
                 aggregation_function='{metric}'):
 
@@ -50,6 +53,8 @@ class G2ZProxy(object):
         self.pattern = pattern
         self.zabbix_url = zabbix_url
         self.graphite_url = graphite_url + '/render?from=-5minutes&rawData=true&target={req}&format=json'
+        self.graphite_user = graphite_user
+        self.graphite_pass = graphite_pass
         self.aggregation_function = aggregation_function
         self.zapi = ZabbixAPI(self.zabbix_url, user=zabbix_user, password=zabbix_pass)
         self.threads = threads
@@ -135,8 +140,9 @@ class G2ZProxy(object):
         params = map(lambda x: x.strip(), metric['metric'].split(';'))
 
         if len(params) > 1:
-            req_metric = '{0}.{1}'.format(metric['host'], params[0])
+            req_metric = '{1}'.format(metric['host'], params[0])
             req = params[1].format(metric=req_metric)
+            print req
         else:
             req = '{host}.{metric}'
 
@@ -157,15 +163,18 @@ class G2ZProxy(object):
         def getData(metric):
             # Create a request to graphite server for specifiec metric
             url = self._createGraphiteRequest(metric)
-
+            req = urllib2.Request(url)
+            base64string = base64.encodestring('%s:%s' % (self.graphite_user,self.graphite_pass))
+            authheader = 'Basic %s' % base64string
+            req.add_header('Authorization',authheader)
             s_time = time.time()
             try:
                 # Get data from graphite API
-                res = urllib2.urlopen(url)
+                res = urllib2.urlopen(req).read()
                 data = yaml.load(res)
             except Exception as e:
                 # if error, process next metric and print exception
-		logger.error('%s', e)
+                logger.error('%s', e)
                 return #continue
             finally:
                 e_time = time.time() - s_time
@@ -183,7 +192,7 @@ class G2ZProxy(object):
                     # We are only interested in latest datapoint
                     data = datapoints[-1]
                     # Update metric record
-		    logger.debug({'value': data[0], 'time': data[1] })
+                    logger.debug({'value': data[0], 'time': data[1] })
                     metric.update({ 'value': data[0], 'time': data[1] })
 
         pool = Pool(processes=self.threads)
@@ -214,6 +223,7 @@ class G2ZProxy(object):
                 metric = '{0}[{1}]'.format(self.key, m['metric'])
                 msg.append(ZabbixMetric(m['host'], metric, m['value'], m['time']))
 
+
         ZabbixSender(use_config=True).send(msg)
         print(len(self.metrics))
 
@@ -227,6 +237,10 @@ if __name__ == '__main__':
             help='Specify URL to Zabbix.')
     argparser.add_argument('-zu', '--zabbix-user', default='admin',
             help='Specify zabbix user.')
+    argparser.add_argument('-gu','--graphite-user',default='root',
+            help='Specify graphite user')
+    argparser.add_argument('-gp','--graphite-pass',default='123456',
+            help='Specify graphite password')
     argparser.add_argument('-zp', '--zabbix-pass', default='zabbix',
             help='Specify zabbix password.')
     argparser.add_argument('-g', '--graphite-url', default='http://localhost',
@@ -247,5 +261,7 @@ if __name__ == '__main__':
             zabbix_user = args.zabbix_user,
             zabbix_pass = args.zabbix_pass,
             graphite_url = args.graphite_url,
+            graphite_user = args.graphite_user,
+            graphite_pass = args.graphite_pass,
             threads = args.threads,
             aggregation_function = args.aggregation_function)
